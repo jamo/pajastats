@@ -1,0 +1,43 @@
+#!/usr/local/rvm/rubies/ruby-2.2.2/bin/ruby
+#!/usr/bin/env ruby
+#
+require 'cgi'
+require 'pstore'
+require 'securerandom'
+require 'json'
+
+cgi = CGI.new
+action = cgi.path_info.gsub("/", "")
+@cookie_name = 'pajastats'
+
+data_dir = ENV['DATA_DIR']
+db = PStore.new(File.join(data_dir, "results.db"))
+
+
+def get_or_generate_cookie(cgi)
+  cgi.cookies[@cookie_name].any? ||
+    CGI::Cookie.new('name' => @cookie_name, 'value' => SecureRandom.uuid.to_s)
+end
+
+json = {}
+cookie = get_or_generate_cookie(cgi)
+
+# Keep browsers happy when asking for favicon
+if action =~ /favicon.ico/
+  cgi.out(status: "200") { "updating" }
+elsif action =~ /list/
+  db.transaction do
+    json[:results] = db[:results]
+  end
+else
+  db.transaction do
+    db[:results] ||= Array.new  #timestamp, integer
+    db[:results] << {time: Time.now, params: cgi.params, cookies: cgi.cookies }
+  end
+  json = {status: "ok"}
+end
+
+
+cgi.out('status' => "OK",
+        'type' => "application/json",
+        'cookie' => cookie) { "#{JSON.generate json}"}
