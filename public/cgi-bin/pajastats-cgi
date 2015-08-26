@@ -1,0 +1,101 @@
+#!/usr/bin/env ruby
+##!/usr/local/rvm/rubies/ruby-2.1.1/bin/ruby
+##!/usr/local/rvm/rubies/ruby-2.2.2/bin/ruby
+
+# days
+#   hours
+#     population
+#
+require 'cgi'
+require 'pstore'
+require 'securerandom'
+require 'json'
+
+cgi = CGI.new
+action = cgi.path_info || ""
+@cookie_name = 'pajastats'
+
+data_dir = ENV['DATA_DIR']
+db = PStore.new(File.join(data_dir, "results.db"))
+
+
+def get_or_generate_cookie(cgi)
+  cgi.cookies[@cookie_name].any? ||
+    CGI::Cookie.new('name' => @cookie_name, 'value' => SecureRandom.uuid.to_s)
+end
+class Hash
+  def deep_merge!(other_hash, &block)
+    other_hash.each_pair do |current_key, other_value|
+      this_value = self[current_key]
+
+      self[current_key] = if this_value.is_a?(Hash) && other_value.is_a?(Hash)
+                            this_value.deep_merge!(other_value, &block)
+                          else
+                            if block_given? && key?(current_key)
+                              block.call(current_key, this_value, other_value)
+                            else
+                              other_value
+                            end
+                          end
+    end
+    self
+  end
+end
+
+cookie = get_or_generate_cookie(cgi)
+json = {}
+
+# Keep browsers happy when asking for favicon
+if action =~ /favicon.ico/
+  cgi.out(status: "200") { "ok" }
+elsif action =~ /list/
+  db.transaction do
+    json[:results] = db[:results]
+  end
+elsif match = action.match(/^\/days\/(\d{1,2}-\d{1,2}-\d{4})\/(\d{1,2})/)
+  #update count to db
+  date, hour = match.captures
+  people_count = cgi.params['people_count'].first
+  if people_count
+    hash = {
+      date =>{
+        hour => people_count
+      }
+    }
+    db.transaction do
+      pajastats = db[:pajastats] || {}
+      pajastats.deep_merge!(hash)
+      db[:pajastats] = pajastats
+      json[:all] = db[:pajastats]
+    end
+  else
+    db.transaction do
+      pajastats = db[:pajastats] || {}
+      date_hours = pajastats[date] || {}
+      json[:count] = date_hours[hour] || -1
+    end
+  end
+elsif match = action.match(/^\/days\/(\d{1,2}.\d{1,2}.\d{4})/)
+  #list for current daate
+  date = match.captures
+  date = date.first if date.respond_to? :first
+  db.transaction do
+    pajastats =db[:pajastats] || {}
+    json[date] = pajastats[date] || {}
+  end
+elsif action =~ /^\/days/
+  db.transaction do
+    pajastats = db[:pajastats] || {}
+    json[:all] = pajastats
+  end
+end
+# Just log em
+db.transaction do
+  db[:results] ||= Array.new  #timestamp, integer
+  db[:results] << {time: Time.now, params: cgi.params, cookies: cgi.cookies }
+end
+
+
+cgi.out('status' => "OK",
+        'type' => "application/json",
+        'cookie' => cookie) { "#{JSON.generate json}"}
